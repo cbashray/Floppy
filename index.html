@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Floppy Bird — Your Eagle Sprite (no rotation)</title>
+  <style>
+    :root{
+      --bg:#70c5ce;
+      --ground:#d97706;
+      --panel:rgba(255,255,255,0.95);
+      --text:#0b1220;
+      --modal-bg: rgba(3,7,18,0.6);
+      --modal-panel: #fff;
+      --btn-bg: #0b1220;
+      --btn-color: #fff;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    body{display:flex;align-items:center;justify-content:center;background:linear-gradient(#9be6f0,#70c5ce);padding:20px}
+    main{max-width:520px;width:100%;text-align:center;position:relative}
+    canvas{display:block;margin:0 auto;border-radius:10px;background:linear-gradient(#87e7f1,#5fc7d7);box-shadow:0 8px 24px rgba(11,18,32,0.18);width:100%;height:auto;touch-action:none}
+    .footer{margin-top:10px;color:var(--text);font-size:14px}
+    .hint{position:absolute;left:50%;transform:translateX(-50%);top:10px;background:var(--panel);padding:8px 12px;border-radius:8px;font-weight:600;color:var(--text)}
+    /* Modal overlay shown after losing */
+    #game-modal{
+      position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+      background:var(--modal-bg);z-index:30;
+    }
+    .modal-panel{
+      background:var(--modal-panel);color:var(--text);padding:18px;border-radius:12px;box-shadow:0 12px 30px rgba(0,0,0,0.25);
+      width:86%;max-width:420px;text-align:center;
+    }
+    .modal-title{font-weight:800;font-size:20px;margin-bottom:6px}
+    .modal-score{font-weight:700;font-size:28px;margin:8px 0}
+    .modal-small{font-size:13px;color:#475569;margin-top:6px}
+    .btn{
+      margin-top:14px;padding:10px 14px;border-radius:10px;background:var(--btn-bg);color:var(--btn-color);display:inline-block;cursor:pointer;border:none;font-weight:700;
+    }
+    .btn.secondary{background:#94a3b8;color:#071124;margin-left:8px}
+    .btn.support{background:#E1306C;color:#fff;margin-left:8px} /* Instagram-like color */
+    .modal-actions{margin-top:12px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+    .loading-hint{position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,0.85);padding:6px 8px;border-radius:8px;font-size:12px}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="hint">Space / Click / Tap to flap</div>
+    <canvas id="game" width="480" height="640" aria-label="Floppy Bird canvas game"></canvas>
+
+    <div id="game-modal" role="dialog" aria-modal="true" aria-hidden="true">
+      <div class="modal-panel" id="modal-panel">
+        <div class="modal-title">You crashed</div>
+        <div class="modal-score" id="modal-score">Score: 0</div>
+        <div class="modal-small" id="modal-best">Best: 0</div>
+        <div class="modal-small" id="modal-countdown">Closing in 10s</div>
+        <div class="modal-actions">
+          <button id="modal-close" class="btn" type="button">Close now</button>
+          <button id="modal-replay" class="btn secondary" type="button">Play again</button>
+          <a id="modal-support" class="btn support" href="https://www.instagram.com/cbashray" target="_blank" rel="noopener noreferrer" aria-label="Support on Instagram">Support</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="loading-hint" id="loading-hint">Loading eagle sprite...</div>
+    <div class="footer small">If sound doesn't play, interact with the canvas once (browser policy).</div>
+  </main>
+
+  <script>
+  (function () {
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    // Hi-DPI scaling
+    function resizeCanvas() {
+      const ratio = window.devicePixelRatio || 1;
+      const cssWidth = Math.min(520, document.querySelector('main').clientWidth);
+      const aspect = 480 / 640;
+      const cssHeight = Math.round(cssWidth / aspect);
+      canvas.style.width = cssWidth + 'px';
+      canvas.style.height = cssHeight + 'px';
+      canvas.width = Math.round(cssWidth * ratio);
+      canvas.height = Math.round(cssHeight * ratio);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+    window.addEventListener('resize', resizeCanvas, {passive:true});
+    resizeCanvas();
+
+    // Config
+    const CONFIG = {
+      gravity: 1400,
+      flapImpulse: -420,
+      pipeSpeed: 200,
+      pipeSpawnInterval: 1.4,
+      pipeGap: 150,
+      minGap: 110,
+      gapReductionPerScore: 1.6,
+      groundHeight: 80,
+      birdRadius: 22, // collision radius
+      pipeWidth: 52,
+    };
+
+    // State
+    let pipes = [];
+    let spawnTimer = 0;
+    let score = 0;
+    let best = Number(localStorage.getItem('floppy_best') || 0);
+    let gameState = 'start'; // 'start' | 'playing' | 'gameover'
+    let modalVisible = false;
+    let modalTimer = null;
+    let modalInterval = null;
+    let countdown = 10;
+
+    const bird = {
+      x: Math.round(480 * 0.28),
+      y: 640 / 2,
+      vy: 0,
+      radius: CONFIG.birdRadius,
+      // rotation removed from behaviour: bird will no longer rotate while moving
+    };
+
+    // Modal elements
+    const modal = document.getElementById('game-modal');
+    const modalScoreEl = document.getElementById('modal-score');
+    const modalBestEl = document.getElementById('modal-best');
+    const modalCountdownEl = document.getElementById('modal-countdown');
+    const modalCloseBtn = document.getElementById('modal-close');
+    const modalReplayBtn = document.getElementById('modal-replay');
+
+    const loadingHint = document.getElementById('loading-hint');
+
+    // Audio
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    let audio = null;
+    function ensureAudio() {
+      if (!AudioCtx) return null;
+      try {
+        if (!audio) audio = new AudioCtx();
+        if (audio.state === 'suspended') audio.resume();
+      } catch (e) {
+        audio = null;
+      }
+      return audio;
+    }
+    function beep(freq = 600, duration = 0.06, type = 'sine', gain = 0.06) {
+      const actx = ensureAudio();
+      if (!actx) return;
+      try {
+        const o = actx.createOscillator();
+        const g = actx.createGain();
+        o.type = type; o.frequency.value = freq;
+        g.gain.value = gain;
+        o.connect(g); g.connect(actx.destination);
+        const now = actx.currentTime;
+        o.start(now);
+        g.gain.setValueAtTime(gain, now);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+        o.stop(now + duration + 0.02);
+      } catch (e) { /* ignore audio errors */ }
+    }
+
+    // Load user-provided eagle image (same-folder file named 'eagle.png').
+    const eagleImage = new Image();
+    let eagleLoaded = false;
+    eagleImage.onload = () => {
+      eagleLoaded = true;
+      loadingHint.style.display = 'none';
+    };
+    eagleImage.onerror = () => {
+      loadingHint.textContent = 'Could not load eagle.png — using emoji fallback';
+      setTimeout(() => loadingHint.style.display = 'none', 2200);
+      eagleLoaded = false;
+    };
+    eagleImage.src = 'eagle.png';
+
+    function reset() {
+      pipes = [];
+      spawnTimer = 0;
+      score = 0;
+      const dpr = window.devicePixelRatio || 1;
+      bird.y = (canvas.height / dpr) / 2;
+      bird.vy = 0;
+      gameState = 'start';
+    }
+
+    function startGame() {
+      hideModal(true);
+      reset();
+      gameState = 'playing';
+    }
+
+    function showModal() {
+      modalScoreEl.textContent = `Score: ${score}`;
+      modalBestEl.textContent = `Best: ${best}`;
+      countdown = 10;
+      modalCountdownEl.textContent = `Closing in ${countdown}s`;
+      modal.style.display = 'flex';
+      modal.setAttribute('aria-hidden', 'false');
+      modalVisible = true;
+
+      clearInterval(modalInterval);
+      modalInterval = setInterval(() => {
+        countdown -= 1;
+        modalCountdownEl.textContent = `Closing in ${countdown}s`;
+        if (countdown <= 0) {
+          hideModal(false);
+        }
+      }, 1000);
+
+      clearTimeout(modalTimer);
+      modalTimer = setTimeout(() => hideModal(false), 10000);
+    }
+
+    function hideModal(fromReplay) {
+      if (!modalVisible && !fromReplay) return;
+      modal.style.display = 'none';
+      modal.setAttribute('aria-hidden', 'true');
+      modalVisible = false;
+      clearInterval(modalInterval);
+      clearTimeout(modalTimer);
+      reset();
+      if (fromReplay) {
+        gameState = 'playing';
+      } else {
+        gameState = 'start';
+      }
+    }
+
+    modalCloseBtn.addEventListener('click', () => hideModal(false));
+    modalReplayBtn.addEventListener('click', () => hideModal(true));
+
+    function gameOver() {
+      if (gameState === 'gameover') return;
+      gameState = 'gameover';
+      best = Math.max(best, score);
+      localStorage.setItem('floppy_best', String(best));
+      beep(120, 0.12, 'square', 0.12);
+      showModal();
+    }
+
+    // Collisions: circle vs rect
+    function circleRectCollision(cx, cy, r, rx, ry, rw, rh) {
+      const closestX = Math.max(rx, Math.min(cx, rx + rw));
+      const closestY = Math.max(ry, Math.min(cy, ry + rh));
+      const dx = cx - closestX;
+      const dy = cy - closestY;
+      return dx * dx + dy * dy < r * r;
+    }
+
+    function spawnPipe() {
+      const gapReduction = Math.min(CONFIG.pipeGap - CONFIG.minGap, score * CONFIG.gapReductionPerScore);
+      const gap = Math.max(CONFIG.minGap, Math.round(CONFIG.pipeGap - gapReduction));
+      const minTop = 40;
+      const maxTop = (canvas.height / (window.devicePixelRatio || 1)) - CONFIG.groundHeight - gap - 40;
+      const top = Math.floor(minTop + Math.random() * Math.max(0, maxTop - minTop));
+      pipes.push({
+        x: (canvas.width / (window.devicePixelRatio || 1)) + 20,
+        top: top,
+        bottom: top + gap,
+        passed: false,
+      });
+    }
+
+    function flap() {
+      // If modal visible, ignore flaps
+      if (modalVisible) return;
+      ensureAudio();
+      if (gameState === 'start') {
+        startGame();
+      }
+      if (gameState === 'playing') {
+        bird.vy = CONFIG.flapImpulse;
+        beep(900, 0.04, 'sine', 0.06);
+      } else if (gameState === 'gameover') {
+        if (!modalVisible) showModal();
+      }
+    }
+
+    // Input
+    window.addEventListener('keydown', e => {
+      if (e.code === 'Space' || e.code === 'ArrowUp') {
+        e.preventDefault();
+        flap();
+      }
+    }, {passive:false});
+    canvas.addEventListener('pointerdown', e => { e.preventDefault(); flap(); }, {passive:false});
+    canvas.addEventListener('touchstart', e => { e.preventDefault(); flap(); }, {passive:false});
+
+    // Drawing functions
+    function drawBirdUsingSprite(ctx, img, radius) {
+      const imgW = img.width || img.naturalWidth || 64;
+      const imgH = img.height || img.naturalHeight || 64;
+      const desiredW = radius * 2.4; // visual width
+      const scale = desiredW / imgW;
+      const w = imgW * scale;
+      const h = imgH * scale;
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(img, -w / 2, -h / 2, w, h);
+    }
+
+    function drawEmojiFallback(ctx, radius) {
+      const size = Math.round(radius * 4);
+      ctx.font = `${size}px "Apple Color Emoji","Noto Color Emoji","Segoe UI Emoji", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🦅', 0, 0);
+    }
+
+    // Game loop update/draw
+    function update(dt) {
+      if (gameState === 'playing') {
+        bird.vy += CONFIG.gravity * dt;
+        bird.y += bird.vy * dt;
+        // rotation intentionally removed — bird will NOT rotate while moving
+        spawnTimer += dt;
+        if (spawnTimer >= CONFIG.pipeSpawnInterval) {
+          spawnTimer = 0;
+          spawnPipe();
+        }
+        for (let p of pipes) {
+          p.x -= CONFIG.pipeSpeed * dt;
+          if (!p.passed && p.x + 40 < bird.x - bird.radius) {
+            p.passed = true;
+            score += 1;
+            beep(1200 - Math.min(700, score * 12), 0.035, 'sine', 0.05);
+          }
+        }
+        pipes = pipes.filter(p => p.x + 80 > -10);
+        const groundY = (canvas.height / (window.devicePixelRatio || 1)) - CONFIG.groundHeight;
+        if (bird.y + bird.radius >= groundY) {
+          bird.y = groundY - bird.radius;
+          gameOver();
+        }
+        if (bird.y - bird.radius <= 0) {
+          bird.y = bird.radius;
+          bird.vy = 0;
+        }
+        for (let p of pipes) {
+          if (circleRectCollision(bird.x, bird.y, bird.radius, p.x, 0, CONFIG.pipeWidth, p.top)) { gameOver(); break; }
+          if (circleRectCollision(bird.x, bird.y, bird.radius, p.x, p.bottom, CONFIG.pipeWidth, (canvas.height / (window.devicePixelRatio || 1)) - p.bottom - CONFIG.groundHeight)) { gameOver(); break; }
+        }
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      const dpr = window.devicePixelRatio || 1;
+      const W = canvas.width / dpr;
+      const H = canvas.height / dpr;
+
+      // Pipes
+      for (let p of pipes) {
+        ctx.fillStyle = '#2e8b57';
+        ctx.fillRect(p.x, 0, CONFIG.pipeWidth, p.top);
+        ctx.fillRect(p.x, p.bottom, CONFIG.pipeWidth, H - p.bottom - CONFIG.groundHeight);
+        ctx.fillStyle = '#1f5f3f';
+        ctx.fillRect(p.x - 6, p.top - 12, CONFIG.pipeWidth + 12, 12);
+        ctx.fillRect(p.x - 6, p.bottom, CONFIG.pipeWidth + 12, 12);
+      }
+
+      // Ground
+      ctx.fillStyle = '#d97706';
+      ctx.fillRect(0, H - CONFIG.groundHeight, W, CONFIG.groundHeight);
+      ctx.fillStyle = '#b45309';
+      ctx.fillRect(0, H - 12, W, 12);
+
+      // Bird (sprite or emoji fallback) - NO rotation applied
+      ctx.save();
+      ctx.translate(bird.x, bird.y);
+      if (eagleLoaded) {
+        drawBirdUsingSprite(ctx, eagleImage, bird.radius);
+      } else {
+        drawEmojiFallback(ctx, bird.radius);
+      }
+      ctx.restore();
+
+      // HUD
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.font = '700 28px system-ui, Arial';
+      ctx.textAlign = 'left';
+      ctx.fillText(`Score: ${score}`, 12, 36);
+      ctx.font = '600 14px system-ui, Arial';
+      ctx.fillText(`Best: ${best}`, 12, 56);
+
+      // center UI (start / fallback gameover if modal not shown)
+      if (!modalVisible && (gameState === 'start' || gameState === 'gameover')) {
+        const w = W * 0.78;
+        const h = 120;
+        const x = (W - w) / 2;
+        const y = (H - h) / 2;
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        roundRect(ctx, x, y, w, h, 12, true, false);
+        ctx.fillStyle = '#0b1220';
+        ctx.textAlign = 'center';
+        ctx.font = '700 22px system-ui, Arial';
+        ctx.fillText(gameState === 'start' ? 'Floppy Eagle' : 'Game Over', W/2, y + 36);
+        ctx.font = '600 14px system-ui, Arial';
+        const lines = gameState === 'start' ? ['Press Space / Click / Tap to start'] : [`Score: ${score}`, `Best: ${best}`, 'Click / Tap to open results'];
+        for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], W/2, y + 64 + i*18);
+      }
+    }
+
+    function roundRect(ctx,x,y,w,h,r,fill,stroke){
+      if (typeof r === 'undefined') r=5;
+      ctx.beginPath();
+      ctx.moveTo(x+r,y);
+      ctx.arcTo(x+w,y,x+w,y+h,r);
+      ctx.arcTo(x+w,y+h,x,y+h,r);
+      ctx.arcTo(x,y+h,x,y,r);
+      ctx.arcTo(x,y,x+w,y,r);
+      ctx.closePath();
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+    }
+
+    // Main loop
+    let lastTime = 0;
+    function loop(ts) {
+      if (!lastTime) lastTime = ts;
+      let delta = (ts - lastTime) / 1000;
+      lastTime = ts;
+      delta = Math.min(0.05, delta);
+      update(delta);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    // initialize and start loop
+    reset();
+    requestAnimationFrame(loop);
+
+    // Expose for debugging
+    window._floppy = { CONFIG, reset, startGame, gameOver, get state(){ return { gameState, score, best, pipes: pipes.length, modalVisible, eagleLoaded } } };
+
+    console.log('Floppy Eagle (sprite) ready. Save eagle.png next to this file. Bird will not rotate while moving.');
+  })();
+  </script>
+</body>
+</html>
